@@ -1,0 +1,106 @@
+---
+  - name: Provision EC2 Instance
+    hosts: local
+    connection: local
+    gather_facts: False
+    tags: provisioning
+    vars:
+      instance_type: t2.nano
+      security_group: ansible-webserver 
+      image: ami-ed100689 
+      keypair: wasim_key_london 
+      region: eu-west-2 
+      count: 1
+      vpc_subnet_id: subnet-aa7a9be7
+      my_test_file: /tmp/test-file.txt
+
+
+    tasks:
+      - name: Create a security group
+        local_action: 
+          module: ec2_group
+          name: "{{ security_group }}"
+          description: Security Group for webserver
+          region: "{{ region }}"
+          rules:
+            - proto: tcp
+              from_port: 22
+              to_port: 22
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 80
+              to_port: 80
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 443
+              to_port: 443
+              cidr_ip: 0.0.0.0/0
+          rules_egress:
+            - proto: all
+              cidr_ip: 0.0.0.0/0
+        register: basic_firewall
+
+      - name: Create IAM role to access S3
+        iam:
+          iam_type: role
+          name: S3Role
+          state: present
+          trust_policy:
+            Version: '2012-10-17'
+            Statement:
+            - Action: sts:AssumeRole
+              Effect: Allow
+              Principal:
+                Service: s3.amazonaws.com
+        tags:
+          - iam
+  
+      - name: Create S3 policy
+        iam_policy:
+          iam_type: role
+          iam_name: "s3_access"
+          policy_name: "s3_access"
+          state: present
+          policy_json: " {{ lookup( 'file', 's3_policy.json.j2') }} "
+        tags:
+          - iam
+
+      - name: Launch the new EC2 Instance
+        local_action: ec2 
+                      group={{ security_group }} 
+                      instance_type={{ instance_type}} 
+                      image={{ image }} 
+                      wait=true 
+                      region={{ region }} 
+                      keypair={{ keypair }}
+                      count={{count}}
+                      vpc_subnet_id={{ vpc_subnet_id }}
+                      instance_profile_name=S3Role
+        register: ec2_provision_result
+        tags:
+          - ec2
+
+      - debug: msg="{{ ec2_provision_result.instances }}"
+        tags:
+          - ec2
+
+      - name: Add the newly created EC2 instance(s) to the local host group (located inside the directory)
+        local_action: lineinfile 
+                      dest="./hosts" 
+                      regexp={{ item.public_ip }} 
+                      insertafter="[webserver]" line={{ item.public_ip }}
+        with_items: "{{ec2_provision_result.instances}}"
+        tags:
+          - ec2
+
+      - name: Install AWS CLI tools
+        pip: 
+          name: awscli
+
+      - name: Output help
+        debug: msg="AMI is {{ image }}. ssh with `ssh -i ~/.ssh/{{ keypair }}.pem ec2-user@{{  item.public_dns_name }}`"
+        with_items: "{{ec2_provision_result.instances}}"
+
+
+
+  
